@@ -13,7 +13,7 @@ from airbyte_cdk.sources import AbstractSource
 from airbyte_cdk.sources.streams import Stream
 from requests_oauthlib import OAuth1
 from airbyte_cdk.sources.streams.http import HttpStream
-from source_netsuite2.constraints import CUSTOM_INCREMENTAL_CURSOR, INCREMENTAL_CURSOR, META_PATH, RECORD_PATH, SCHEMA_HEADERS
+from source_netsuite2.constraints import CUSTOM_INCREMENTAL_CURSOR, INCREMENTAL_CURSOR, RECORD_PATH, REST_PATH
 
 # Basic full refresh stream
 class Netsuite2Stream(HttpStream, ABC):
@@ -31,6 +31,8 @@ class Netsuite2Stream(HttpStream, ABC):
 
     primary_key = "id"
 
+    http_method = "POST"
+
     raise_on_http_errors = True
 
     @property
@@ -45,14 +47,30 @@ class Netsuite2Stream(HttpStream, ABC):
         return None
 
     def request_params(self, next_page_token: Mapping[str, Any] = None, **kwargs) -> MutableMapping[str, Any]:
-        params = {"limit": 100} #TODO: make this configurable
+        params = {"limit": 4} #TODO: make this configurable
         if next_page_token:
             params.update(**next_page_token)
         return params
 
+    def request_headers(self, stream_state: Mapping[str, Any], stream_slice: Mapping[str, Any] = None, next_page_token: Mapping[str, Any] = None) -> Mapping[str, Any]:
+         return {"prefer": "transient", "Content-Type": "application/json"}
+
     def parse_response(self, response: requests.Response, **kwargs) -> Iterable[Mapping]:
         records = response.json().get("items")
-        yield {}
+       
+        if records:
+            for record in records:
+                # make sub-requests for each record fetched
+                yield from self.fetch_record(record)
+
+    def fetch_record(self, record: Mapping[str, Any]) -> Iterable[Mapping[str, Any]]:
+        print ("fetch_record")
+        yield record
+
+    def request_body_json(self, stream_state: Mapping[str, Any], stream_slice: Mapping[str, Any] = None, next_page_token: Mapping[str, Any] = None) -> Optional[Mapping]:
+        return {
+	        "q": "SELECT id, tranid, type, to_char(lastModifiedDate, 'yyyy-mm-dd HH24:MI:SS') as lastmodified FROM transaction as t WHERE t.type = 'SalesOrd' AND to_char(lastModifiedDate, 'yyyy-mm-dd HH24:MI:SS') > '2023-02-08 16:02:42'" 
+        }
 
 # Basic incremental stream
 class IncrementalNetsuite2Stream(Netsuite2Stream, ABC):
@@ -79,29 +97,10 @@ class Transactions(IncrementalNetsuite2Stream):
     primary_key = "id"
 
     def path(self, **kwargs) -> str:
-        return "suiteql"
+        return REST_PATH + "query/v1/suiteql"
 
-    def stream_slices(self, stream_state: Mapping[str, Any] = None, **kwargs) -> Iterable[Optional[Mapping[str, any]]]:
-        """
-        TODO: Optionally override this method to define this stream's slices. If slicing is not needed, delete this method.
-
-        Slices control when state is saved. Specifically, state is saved after a slice has been fully read.
-        This is useful if the API offers reads by groups or filters, and can be paired with the state object to make reads efficient. See the "concepts"
-        section of the docs for more information.
-
-        The function is called before reading any records in a stream. It returns an Iterable of dicts, each containing the
-        necessary data to craft a request for a slice. The stream state is usually referenced to determine what slices need to be created.
-        This means that data in a slice is usually closely related to a stream's cursor_field and stream_state.
-
-        An HTTP request is made for each returned slice. The same slice can be accessed in the path, request_params and request_header functions to help
-        craft that specific request.
-
-        For example, if https://example-api.com/v1/employees offers a date query params that returns data for that particular day, one way to implement
-        this would be to consult the stream state object for the last synced date, then return a slice containing each date from the last synced date
-        till now. The request_params function would then grab the date from the stream_slice and make it part of the request by injecting it into
-        the date query param.
-        """
-        raise NotImplementedError("Implement stream slices or delete this method!")
+    def stream_slices(self, **kwargs) -> Iterable[Optional[Mapping[str, any]]]:
+        return [None]
 
 
 # Source
@@ -152,9 +151,13 @@ class SourceNetsuite2(AbstractSource):
         auth = self.auth(config)
         session = self.get_session(auth)
         base_url = self.base_url(config)
-        metadata_url = base_url + META_PATH
-        object_names = config.get("object_types")
 
-        # TODO remove the authenticator if not required.
-        auth = TokenAuthenticator(token="api_key")  # Oauth2Authenticator is also available if you need oauth support
-        return [Customers(authenticator=auth), Employees(authenticator=auth)]
+       
+        
+        input_args = {
+            "auth": auth,
+            "base_url": base_url,
+            "start_datetime": config["start_datetime"],
+            "window_in_days": config["window_in_days"],
+        }
+        return [Transactions(**input_args)]
