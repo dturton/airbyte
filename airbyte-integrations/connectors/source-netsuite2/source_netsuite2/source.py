@@ -5,14 +5,13 @@
 import logging
 from abc import ABC
 from typing import Any, Iterable, List, Mapping, MutableMapping, Optional, Tuple
-from collections import Counter
-from json import JSONDecodeError
+from datetime import datetime
 
 import requests
 from airbyte_cdk.sources import AbstractSource
 from airbyte_cdk.sources.streams import Stream
-from requests_oauthlib import OAuth1
 from airbyte_cdk.sources.streams.http import HttpStream
+from requests_oauthlib import OAuth1
 from source_netsuite2.constraints import CUSTOM_INCREMENTAL_CURSOR, INCREMENTAL_CURSOR, RECORD_PATH, REST_PATH
 
 # Basic full refresh stream
@@ -35,6 +34,8 @@ class Netsuite2Stream(HttpStream, ABC):
 
     raise_on_http_errors = True
 
+    
+
     @property
     def url_base(self) -> str:
         return self.base_url
@@ -47,7 +48,7 @@ class Netsuite2Stream(HttpStream, ABC):
         return None
 
     def request_params(self, next_page_token: Mapping[str, Any] = None, **kwargs) -> MutableMapping[str, Any]:
-        params = {"limit": 4} #TODO: make this configurable
+        params = {"limit": 100} #TODO: make this configurable
         if next_page_token:
             params.update(**next_page_token)
         return params
@@ -64,43 +65,63 @@ class Netsuite2Stream(HttpStream, ABC):
                 yield from self.fetch_record(record)
 
     def fetch_record(self, record: Mapping[str, Any]) -> Iterable[Mapping[str, Any]]:
-        print ("fetch_record")
-        yield record
+        record_type = record.get("type").replace(" ", "").lower()
+        url = self.base_url + RECORD_PATH + record_type + "/" + record.get("id")
+        args = {"method": "GET", "url": url, "params": {"expandSubResources": True}}
+        prep_req = self._session.prepare_request(requests.Request(**args))
+        response = self._send_request(prep_req, request_kwargs={})
+        # sometimes response.status_code == 400,
+        # but contains json elements with error description,
+        # to avoid passing it as {TYPE: RECORD}, we filter response by status
+        if response.status_code == requests.codes.ok:
+            self.logger.info(f"Fetching record {record.get('id')}")
+            data = response.json()
+            data_with_type = {**data, "type": record_type}
+            yield data_with_type
 
     def request_body_json(self, stream_state: Mapping[str, Any], stream_slice: Mapping[str, Any] = None, next_page_token: Mapping[str, Any] = None) -> Optional[Mapping]:
+        current_cursor = stream_state.get(self.cursor_field, self.start_datetime)
+        date_object_cursor = datetime.strptime(current_cursor, '%Y-%m-%dT%H:%M:%SZ')
+        formated_cursor = date_object_cursor.strftime("%Y-%m-%d %H:%M:%S")
         return {
-	        "q": "SELECT id, tranid, type, to_char(lastModifiedDate, 'yyyy-mm-dd HH24:MI:SS') as lastmodified FROM transaction as t WHERE t.type = 'SalesOrd' AND to_char(lastModifiedDate, 'yyyy-mm-dd HH24:MI:SS') > '2023-02-08 16:02:42'" 
+	        "q": "SELECT id, tranid, BUILTIN.DF(type) as type, to_char(lastModifiedDate, 'yyyy-mm-dd HH24:MI:SS') as lastmodified FROM transaction as t WHERE t.type = 'SalesOrd' AND to_char(lastModifiedDate, 'yyyy-mm-dd HH24:MI:SS') > '" + formated_cursor + "' ORDER BY lastModifiedDate ASC"
         }
 
 # Basic incremental stream
 class IncrementalNetsuite2Stream(Netsuite2Stream, ABC):
-    # TODO: Fill in to checkpoint stream reads after N records. This prevents re-reading of data if the stream fails for any reason.
-    state_checkpoint_interval = 100
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._state = {}
+
+    state_checkpoint_interval = 10
 
     @property
     def cursor_field(self) -> str:
         return INCREMENTAL_CURSOR
 
-    def get_updated_state(self, current_stream_state: MutableMapping[str, Any], latest_record: Mapping[str, Any]) -> Mapping[str, Any]:
-        """
-        Override to determine the latest state after reading the latest record. This typically compared the cursor_field from the latest record and
-        the current state and picks the 'most' recent cursor. This is how a stream's state is determined. Required for incremental.
-        """
-        return {}
+    @property
+    def state(self):
+        return self._state
+
+    @state.setter
+    def state(self, value):
+        self._state = value
 
 
 class Transactions(IncrementalNetsuite2Stream):
-    # TODO: Fill in the cursor_field. Required.
-    cursor_field = INCREMENTAL_CURSOR
 
-    # TODO: Fill in the primary key. Required. This is usually a unique field in the stream, like an ID or a timestamp.
     primary_key = "id"
 
     def path(self, **kwargs) -> str:
         return REST_PATH + "query/v1/suiteql"
 
-    def stream_slices(self, **kwargs) -> Iterable[Optional[Mapping[str, any]]]:
-        return [None]
+    def get_updated_state(self, current_stream_state: MutableMapping[str, Any], latest_record: Mapping[str, Any]):
+        latest_record_cursor_value = latest_record.get(self.cursor_field)
+        latest_cursor_value =  latest_record_cursor_value or self.start_datetime
+        current_cursor_value = current_stream_state.get(self.cursor_field, self.start_datetime) or self.start_datetime
+        self._state = {self.cursor_field: max(latest_cursor_value, current_cursor_value)}
+        return self._state
 
 
 # Source
