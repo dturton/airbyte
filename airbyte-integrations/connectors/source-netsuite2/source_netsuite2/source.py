@@ -8,6 +8,7 @@ from typing import Any, Iterable, List, Mapping, MutableMapping, Optional, Tuple
 from datetime import datetime
 
 import requests
+from airbyte_cdk.sources.streams import IncrementalMixin
 from airbyte_cdk.sources import AbstractSource
 from airbyte_cdk.sources.streams import Stream
 from airbyte_cdk.sources.streams.http import HttpStream
@@ -32,9 +33,10 @@ class Netsuite2Stream(HttpStream, ABC):
 
     http_method = "POST"
 
+    page_size = 1000
+
     raise_on_http_errors = True
 
-    
 
     @property
     def url_base(self) -> str:
@@ -48,7 +50,7 @@ class Netsuite2Stream(HttpStream, ABC):
         return None
 
     def request_params(self, next_page_token: Mapping[str, Any] = None, **kwargs) -> MutableMapping[str, Any]:
-        params = {"limit": 100} #TODO: make this configurable
+        params = {"limit": self.page_size}
         if next_page_token:
             params.update(**next_page_token)
         return params
@@ -74,10 +76,11 @@ class Netsuite2Stream(HttpStream, ABC):
         # but contains json elements with error description,
         # to avoid passing it as {TYPE: RECORD}, we filter response by status
         if response.status_code == requests.codes.ok:
-            self.logger.info(f"Fetching record {record.get('id')}")
-            data = response.json()
-            data_with_type = {**data, "type": record_type}
-            yield data_with_type
+            record = response.json()
+            record_with_type = {**record, "type": record_type}
+            self.logger.info(f"Fetched record {record_with_type.get('id')} with datelastmodified {record_with_type.get(self.cursor_field)}")
+            self.state = record_with_type
+            yield record_with_type
 
     def request_body_json(self, stream_state: Mapping[str, Any], stream_slice: Mapping[str, Any] = None, next_page_token: Mapping[str, Any] = None) -> Optional[Mapping]:
         current_cursor = stream_state.get(self.cursor_field, self.start_datetime)
@@ -88,25 +91,33 @@ class Netsuite2Stream(HttpStream, ABC):
         }
 
 # Basic incremental stream
-class IncrementalNetsuite2Stream(Netsuite2Stream, ABC):
+class IncrementalNetsuite2Stream(Netsuite2Stream, IncrementalMixin):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._state = {}
-
-    state_checkpoint_interval = 10
+        self._cursor_value = None
+        
+    state_checkpoint_interval = 100
 
     @property
     def cursor_field(self) -> str:
         return INCREMENTAL_CURSOR
 
     @property
-    def state(self):
-        return self._state
+    def state(self) -> Mapping[str, Any]:
+        return {self.cursor_field: str(self._cursor_value)}
 
     @state.setter
-    def state(self, value):
-        self._state = value
+    def state(self, value: Mapping[str, Any]):
+        """
+        Define state as a max between given value and current state
+        """
+        if not self._cursor_value:
+            self._cursor_value = value[self.cursor_field]
+        else:
+            self._cursor_value = max(value[self.cursor_field], self.state[self.cursor_field])
+
 
 
 class Transactions(IncrementalNetsuite2Stream):
@@ -115,13 +126,6 @@ class Transactions(IncrementalNetsuite2Stream):
 
     def path(self, **kwargs) -> str:
         return REST_PATH + "query/v1/suiteql"
-
-    def get_updated_state(self, current_stream_state: MutableMapping[str, Any], latest_record: Mapping[str, Any]):
-        latest_record_cursor_value = latest_record.get(self.cursor_field)
-        latest_cursor_value =  latest_record_cursor_value or self.start_datetime
-        current_cursor_value = current_stream_state.get(self.cursor_field, self.start_datetime) or self.start_datetime
-        self._state = {self.cursor_field: max(latest_cursor_value, current_cursor_value)}
-        return self._state
 
 
 # Source
@@ -160,6 +164,7 @@ class SourceNetsuite2(AbstractSource):
         # if `object_types` are not provided, use `Contact` object
         # there should be at least 1 contact available in every NetSuite account by default.
         url = base_url + RECORD_PATH + "contact"
+        logger.info(f"Checking connection with {url}")
         try:
             response = session.get(url=url, params={"limit": 1})
             response.raise_for_status()
