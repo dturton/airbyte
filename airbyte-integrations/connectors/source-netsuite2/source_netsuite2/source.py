@@ -13,7 +13,7 @@ from airbyte_cdk.sources import AbstractSource
 from airbyte_cdk.sources.streams import Stream
 from airbyte_cdk.sources.streams.http import HttpStream
 from requests_oauthlib import OAuth1
-from source_netsuite2.constraints import CUSTOM_INCREMENTAL_CURSOR, INCREMENTAL_CURSOR, RECORD_PATH, REST_PATH
+from source_netsuite2.constraints import INCREMENTAL_CURSOR, RECORD_PATH, REST_PATH
 
 # Basic full refresh stream
 class Netsuite2Stream(HttpStream, ABC):
@@ -58,6 +58,43 @@ class Netsuite2Stream(HttpStream, ABC):
     def request_headers(self, stream_state: Mapping[str, Any], stream_slice: Mapping[str, Any] = None, next_page_token: Mapping[str, Any] = None) -> Mapping[str, Any]:
          return {"prefer": "transient", "Content-Type": "application/json"}
 
+
+    def request_body_json(self, stream_state: Mapping[str, Any], stream_slice: Mapping[str, Any] = None, next_page_token: Mapping[str, Any] = None) -> Optional[Mapping]:
+        current_cursor = stream_state.get(self.cursor_field, self.start_datetime)
+        date_object_cursor = datetime.strptime(current_cursor, '%Y-%m-%dT%H:%M:%SZ')
+        formated_cursor = date_object_cursor.strftime("%Y-%m-%d %H:%M:%S")
+        return {
+	        "q": "SELECT id, tranid, BUILTIN.DF(type) as type, to_char(lastModifiedDate, 'yyyy-mm-dd HH24:MI:SS') as lastmodified FROM transaction as t WHERE t.type = 'SalesOrd' AND to_char(lastModifiedDate, 'yyyy-mm-dd HH24:MI:SS') > '" + formated_cursor + "' ORDER BY lastModifiedDate ASC"
+        }
+
+# Basic incremental stream
+class IncrementalNetsuite2Stream(Netsuite2Stream, IncrementalMixin):
+
+    state_checkpoint_interval = 50
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._state = {}
+
+
+    @property
+    def cursor_field(self) -> str:
+        return INCREMENTAL_CURSOR
+
+    @property
+    def state(self) -> Mapping[str, Any]:
+         return self._state
+
+    @state.setter
+    def state(self, value: Mapping[str, Any]):
+        """
+        Define state as a max between given value and current state
+        """
+        if not self._state:
+            self._state = {self.cursor_field: value[self.cursor_field]}
+        else:
+            self._state = {self.cursor_field: max(value[self.cursor_field], self.state[self.cursor_field])}
+
     def parse_response(self, response: requests.Response, **kwargs) -> Iterable[Mapping]:
         records = response.json().get("items")
        
@@ -72,9 +109,6 @@ class Netsuite2Stream(HttpStream, ABC):
         args = {"method": "GET", "url": url, "params": {"expandSubResources": True}}
         prep_req = self._session.prepare_request(requests.Request(**args))
         response = self._send_request(prep_req, request_kwargs={})
-        # sometimes response.status_code == 400,
-        # but contains json elements with error description,
-        # to avoid passing it as {TYPE: RECORD}, we filter response by status
         if response.status_code == requests.codes.ok:
             record = response.json()
             record_with_type = {**record, "type": record_type}
@@ -82,46 +116,7 @@ class Netsuite2Stream(HttpStream, ABC):
             self.state = record_with_type
             yield record_with_type
 
-    def request_body_json(self, stream_state: Mapping[str, Any], stream_slice: Mapping[str, Any] = None, next_page_token: Mapping[str, Any] = None) -> Optional[Mapping]:
-        current_cursor = stream_state.get(self.cursor_field, self.start_datetime)
-        date_object_cursor = datetime.strptime(current_cursor, '%Y-%m-%dT%H:%M:%SZ')
-        formated_cursor = date_object_cursor.strftime("%Y-%m-%d %H:%M:%S")
-        return {
-	        "q": "SELECT id, tranid, BUILTIN.DF(type) as type, to_char(lastModifiedDate, 'yyyy-mm-dd HH24:MI:SS') as lastmodified FROM transaction as t WHERE t.type = 'SalesOrd' AND to_char(lastModifiedDate, 'yyyy-mm-dd HH24:MI:SS') > '" + formated_cursor + "' ORDER BY lastModifiedDate ASC"
-        }
-
-# Basic incremental stream
-class IncrementalNetsuite2Stream(Netsuite2Stream, IncrementalMixin):
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self._state = {}
-        self._cursor_value = None
-        
-    state_checkpoint_interval = 100
-
-    @property
-    def cursor_field(self) -> str:
-        return INCREMENTAL_CURSOR
-
-    @property
-    def state(self) -> Mapping[str, Any]:
-        return {self.cursor_field: str(self._cursor_value)}
-
-    @state.setter
-    def state(self, value: Mapping[str, Any]):
-        """
-        Define state as a max between given value and current state
-        """
-        if not self._cursor_value:
-            self._cursor_value = value[self.cursor_field]
-        else:
-            self._cursor_value = max(value[self.cursor_field], self.state[self.cursor_field])
-
-
-
 class Transactions(IncrementalNetsuite2Stream):
-
     primary_key = "id"
 
     def path(self, **kwargs) -> str:
