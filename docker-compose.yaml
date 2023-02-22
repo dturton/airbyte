@@ -51,6 +51,8 @@ services:
       - db:/var/lib/postgresql/data
     networks:
       - airbyte_internal
+    ports:
+      - "5432:5432"
   worker:
     image: airbyte/worker:${VERSION}
     logging: *default-logging
