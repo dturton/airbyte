@@ -23,10 +23,12 @@ class Transactions(HttpStream, IncrementalMixin):
     base_url: str,
     start_datetime: str,
     window_in_days: int,
+    object_names: List[str],
     ):
         self.base_url = base_url
         self.start_datetime = start_datetime
         self.window_in_days = window_in_days
+        self.object_names = object_names
         super().__init__(authenticator=auth)
 
     primary_key = "id"
@@ -91,8 +93,10 @@ class Transactions(HttpStream, IncrementalMixin):
         current_cursor = stream_state.get(self.cursor_field, self.start_datetime)
         date_object_cursor = datetime.strptime(current_cursor, '%Y-%m-%dT%H:%M:%SZ')
         formated_cursor = date_object_cursor.strftime("%Y-%m-%d %H:%M:%S")
+        tuple_repr = tuple(self.object_names)
+        commaSeparatedObjectNames = str(tuple_repr)
         return {
-	        "q": "SELECT id, tranid, BUILTIN.DF(type) as type, to_char(lastModifiedDate, 'yyyy-mm-dd HH24:MI:SS') as lastModifiedDate FROM transaction as t WHERE  t.type IN ('SalesOrd','ItemRcpt','ItemShip','CashSale','PurchOrd') AND to_char(lastModifiedDate, 'yyyy-mm-dd HH24:MI:SS') > '" + formated_cursor + "' ORDER BY lastModifiedDate ASC"
+	        "q": "SELECT id, tranid, BUILTIN.DF(type) as type, to_char(lastModifiedDate, 'yyyy-mm-dd HH24:MI:SS') as lastModifiedDate FROM transaction as t WHERE  t.type IN (" + commaSeparatedObjectNames + ") AND to_char(lastModifiedDate, 'yyyy-mm-dd HH24:MI:SS') > '" + formated_cursor + "' ORDER BY lastModifiedDate ASC"
         }
 
 

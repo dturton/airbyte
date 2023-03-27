@@ -49,7 +49,7 @@ connectionSpecification:
         type: string
       description: The API names of the Netsuite objects you want to sync. Setting this speeds up the connection setup process by limiting the number of schemas that need to be retrieved from Netsuite.
       order: 5
-      examples: ["customer", "salesorder", "etc"]
+      examples: ['SalesOrd','ItemRcpt','ItemShip','CashSale','PurchOrd','CustPymt','CustInvc','CustRfnd','CustCred','InvTrnfr','InvAdjst']
       default: []
     start_datetime:
       type: string

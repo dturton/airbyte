@@ -6,6 +6,7 @@ import logging
 from abc import ABC
 from typing import Any, Iterable, List, Mapping, MutableMapping, Optional, Tuple
 from datetime import datetime
+from collections import Counter
 
 import pendulum
 import requests
@@ -47,7 +48,7 @@ class SourceNetsuite2(AbstractSource):
     def check_connection(self, logger, config: Mapping[str, Any]) -> Tuple[bool, Any]:
         auth = self.auth(config)
         base_url = self.base_url(config)
-        session = self.get_session(auth)    
+        session = self.get_session(auth)  
         url = base_url + RECORD_PATH + "contact"
         logger.info(f"Checking connection with {url}")
         try:
@@ -55,20 +56,21 @@ class SourceNetsuite2(AbstractSource):
             response.raise_for_status()
             return True, None
         except requests.exceptions.HTTPError as e:
-            return False, e
-  
+                return False, e
+    
 
     def streams(self, config: Mapping[str, Any]) -> List[Stream]:
         auth = self.auth(config)
         session = self.get_session(auth)
         base_url = self.base_url(config)
+        object_names = config.get("object_types") or ["SalesOrd","ItemRcpt","ItemShip","CashSale","PurchOrd","CustPymt","CustInvc","CustRfnd","CustCred","InvTrnfr","InvAdjst"]
 
-       
-        
+
         input_args = {
             "auth": auth,
             "base_url": base_url,
             "start_datetime": config["start_datetime"],
             "window_in_days": config["window_in_days"],
+            "object_names": object_names,
         }
         return [Transactions(**input_args)]
