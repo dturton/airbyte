@@ -10,12 +10,12 @@ from collections import Counter
 
 import pendulum
 import requests
-from airbyte_cdk.sources.streams import IncrementalMixin, Stream
+from airbyte_cdk.sources.streams import Stream
 from airbyte_cdk.sources import AbstractSource
 from airbyte_cdk.sources.streams import Stream
 from requests_oauthlib import OAuth1
 from source_netsuite2.constraints import INCREMENTAL_CURSOR, RECORD_PATH, REST_PATH
-from source_netsuite2.streams import Transactions
+from source_netsuite2.streams import InventorySnapshot, Transactions
 
 
 # Source
@@ -73,4 +73,4 @@ class SourceNetsuite2(AbstractSource):
             "window_in_days": config["window_in_days"],
             "object_names": object_names,
         }
-        return [Transactions(**input_args)]
+        return [Transactions(**input_args),InventorySnapshot(**input_args)]
