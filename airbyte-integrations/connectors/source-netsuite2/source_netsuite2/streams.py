@@ -12,7 +12,7 @@ from airbyte_cdk.sources.streams.http import HttpStream
 from requests_oauthlib import OAuth1
 from source_netsuite2.constraints import INCREMENTAL_CURSOR, RECORD_PATH, REST_PATH
 
-class NetSuiteStream(HttpStream,ABC):
+class NetSuiteStream(HttpStream, ABC):
     def __init__(
     self,
     auth: OAuth1,
@@ -33,7 +33,7 @@ class NetSuiteStream(HttpStream,ABC):
 
     records_per_slice = 100
 
-    request_limit = 1000
+    request_limit = 1 # TODO: change to 1000
 
     raise_on_http_errors = True
 
@@ -58,17 +58,6 @@ class NetSuiteStream(HttpStream,ABC):
 
     def request_headers(self, stream_state: Mapping[str, Any], stream_slice: Mapping[str, Any] = None, next_page_token: Mapping[str, Any] = None) -> Mapping[str, Any]:
          return {"prefer": "transient", "Content-Type": "application/json"}
-
-    def fetch_record(self, record: Mapping[str, Any]) -> Iterable[Mapping[str, Any]]:
-        record_type = record.get("type").replace(" ", "").lower()
-        url = self.base_url + RECORD_PATH + record_type + "/" + record.get("id")
-        args = {"method": "GET", "url": url, "params": {"expandSubResources": True}}
-        prep_req = self._session.prepare_request(requests.Request(**args))
-        response = self._send_request(prep_req, request_kwargs={})
-        if response.status_code == requests.codes.ok:
-            record = response.json()
-            record_with_type = {**record, "type": record_type}
-            return record_with_type
 
 class IncrementalNetsuiteStream(NetSuiteStream, IncrementalMixin):
     @property
@@ -139,6 +128,7 @@ class Transactions(IncrementalNetsuiteStream):
                 yield transactionRecord_with_type
             
 
+
 class InventorySnapshot(NetSuiteStream):
 
     def path(self, **kwargs) -> str:
@@ -146,7 +136,7 @@ class InventorySnapshot(NetSuiteStream):
 
     def request_body_json(self, stream_state: Mapping[str, Any], stream_slice: Mapping[str, Any] = None, next_page_token: Mapping[str, Any] = None) -> Optional[Mapping]:
         return {
-	        "q": "SELECT item,inventoryitemlocations.location,averagecostmli,quantityavailable,quantitybackordered,quantitycommitted,quantityonhand,quantityonorder, isinactive FROM inventoryitemlocations inner join item on item.id = inventoryitemlocations.item where isinactive = 'F'"
+	        "q": "SELECT id,itemid, BUILTIN.DF(itemtype) as type, lastmodifieddate FROM item where itemtype IN ('InvtPart','Assembly') and isinactive = 'F'"
         }
 
     def parse_response(self, response: requests.Response, **kwargs) -> Iterable[Mapping]:
@@ -155,8 +145,47 @@ class InventorySnapshot(NetSuiteStream):
     
     def read_records(self, *args, **kwargs) -> Iterable[Mapping[str, Any]]:
         for record in super().read_records(*args, **kwargs):
-            self.logger.info(f"Fetched record {record.get('item')}")
-            yield record
+            record_type = record.get("type").replace(" ", "").lower()
+            if (record_type.startswith("assembly")):
+                record_type = "assemblyitem"
+            url = self.base_url + RECORD_PATH + record_type + "/" + record.get("id")
+            args = {"method": "GET", "url": url, "params": {"expandSubResources": True}}
+            prep_req = self._session.prepare_request(requests.Request(**args))
+            response = self._send_request(prep_req, request_kwargs={})
+            if response.status_code == requests.codes.ok:
+                itemRecord = response.json()
+                itemLocations = itemRecord.get("locations").get("items")
+                cleaned_itemsLocations = []
+                print(itemRecord.get("internalId"))
+                for location in itemLocations:
+                    cleaned_item_location = {
+                        'locationId': location['locationId'],
+                        'location_display': location['location_display'],
+                        'quantityAvailable': location.get('quantityAvailable', None),
+                        'averageCostMli': location.get('averageCostMli', None),
+                        'lastPurchasePriceMli': location.get('lastPurchasePriceMli', None),
+                        'onHandValueMli': location.get('onHandValueMli', None),
+                        'quantityCommitted': location.get('quantityCommitted', None),
+                        'quantityOnHand': location.get('quantityOnHand', None)
+                    }
+                    cleaned_itemsLocations.append(cleaned_item_location)
+                
+                itemRecord_with_type = {
+                    "internalId": itemRecord.get("internalId")
+                    ,"id": itemRecord.get("internalId")
+                    ,"itemId": itemRecord.get("itemid")
+                    , "type": record_type
+                    , "locations": itemRecord.get("locations").get("items")
+                    , "lastModifiedDate": record.get("lastmodifieddate")
+                    , "salesDescription": itemRecord.get("salesDescription")
+                    , "lastPurchasePrice": itemRecord.get("lastPurchasePrice")
+                    , "manufacturer": itemRecord.get("manufacturer")
+                    , "price": itemRecord.get("price").get("items")
+                    , "totalValue": itemRecord.get("totalValue")
+                    , "locations": itemRecord.get("averageCost")
+
+                    }
+                yield itemRecord_with_type
     
 
 
