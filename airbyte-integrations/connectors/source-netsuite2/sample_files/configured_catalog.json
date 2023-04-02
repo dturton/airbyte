@@ -2,11 +2,11 @@
   "streams": [
     {
       "stream": {
-        "name": "transactions",
+        "name": "inventory_snapshot",
         "json_schema": {},
-        "supported_sync_modes": ["incremental"]
+        "supported_sync_modes": ["full_refresh"]
       },
-      "sync_mode": "incremental",
+      "sync_mode": "full_refresh",
       "destination_sync_mode": "append"
     }
   ]
