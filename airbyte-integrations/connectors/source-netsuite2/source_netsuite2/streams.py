@@ -1,4 +1,3 @@
-#
 # Copyright (c) 2023 Airbyte, Inc., all rights reserved.
 #
 from abc import ABC, abstractmethod, abstractproperty
@@ -33,7 +32,7 @@ class NetSuiteStream(HttpStream, ABC):
 
     records_per_slice = 100
 
-    request_limit = 1 # TODO: change to 1000
+    request_limit = 1000 # TODO: change to 1000
 
     raise_on_http_errors = True
 
@@ -155,8 +154,34 @@ class InventorySnapshot(NetSuiteStream):
             if response.status_code == requests.codes.ok:
                 itemRecord = response.json()
                 itemLocations = itemRecord.get("locations").get("items")
-                cleaned_itemsLocations = []
-                print(itemRecord.get("internalId"))
+                itemMembersObject = itemRecord.get("member", None)
+                itemMembers = itemMembersObject.get("items") if itemMembersObject else None
+                itemPricing = itemRecord.get("price", None).get("items") if itemRecord.get("price", None) else None
+
+                cleaned_itemMembers = []
+                if itemMembers:
+                    for itemMember in itemMembers:
+                        cleaned_item_member = {
+                            'memberItemId': itemMember.get('item').get('id', None),
+                            'memberItemRefName': itemMember.get('item').get('refName', None),
+                            'memberQuantity': itemMember['quantity'],
+                            'lineNumber': itemMember.get('lineNumber', None),
+                            'itemSource': itemMember.get('itemSource', None)
+
+                        }
+                    cleaned_itemMembers.append(itemMember)   
+                
+                cleaned_prices = []
+                for price in itemPricing:
+                    cleaned_price = {
+                        'price': price.get('price'),
+                        'priceLevelRefName': price.get('priceLevelName'),
+                        "priceLevelId": price.get('priceLevel').get('id')
+
+                    }
+                    cleaned_prices.append(cleaned_price)
+
+                cleaned_itemLocations = []
                 for location in itemLocations:
                     cleaned_item_location = {
                         'locationId': location['locationId'],
@@ -166,24 +191,25 @@ class InventorySnapshot(NetSuiteStream):
                         'lastPurchasePriceMli': location.get('lastPurchasePriceMli', None),
                         'onHandValueMli': location.get('onHandValueMli', None),
                         'quantityCommitted': location.get('quantityCommitted', None),
-                        'quantityOnHand': location.get('quantityOnHand', None)
+                        'quantityOnHand': location.get('quantityOnHand', None),
+                        'quantityOnOrder': location.get('quantityOnOrder', None)
                     }
-                    cleaned_itemsLocations.append(cleaned_item_location)
+                    cleaned_itemLocations.append(cleaned_item_location)
                 
                 itemRecord_with_type = {
-                    "internalId": itemRecord.get("internalId")
-                    ,"id": itemRecord.get("internalId")
-                    ,"itemId": itemRecord.get("itemid")
+                      "internalId": itemRecord.get("internalId")
+                    , "id": itemRecord.get("internalId")
+                    , "itemId": itemRecord.get("itemid")
                     , "type": record_type
                     , "locations": itemRecord.get("locations").get("items")
                     , "lastModifiedDate": record.get("lastmodifieddate")
                     , "salesDescription": itemRecord.get("salesDescription")
                     , "lastPurchasePrice": itemRecord.get("lastPurchasePrice")
                     , "manufacturer": itemRecord.get("manufacturer")
-                    , "price": itemRecord.get("price").get("items")
                     , "totalValue": itemRecord.get("totalValue")
-                    , "locations": itemRecord.get("averageCost")
-
+                    , "locations": cleaned_itemLocations
+                    , "member": cleaned_itemMembers
+                    , "price": cleaned_prices
                     }
                 yield itemRecord_with_type
     

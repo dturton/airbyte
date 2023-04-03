@@ -2,14 +2,8 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "type": "object",
   "properties": {
-    "item": {
-      "type": "string"
-    },
-    "location": {
-      "type": "number"
-    },
-    "quantityavailable": {
-      "type": "number"
+    "id": {
+      "type": ["object"]
     }
   }
 }
